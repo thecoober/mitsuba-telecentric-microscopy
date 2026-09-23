@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.1 - 2026-09-23
 
 - Replace the flat rough-metal example with an inclined checkerboard that
   visualizes telecentric defocus and the finite Kohler illumination field.

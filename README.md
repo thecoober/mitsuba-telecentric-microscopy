@@ -5,7 +5,7 @@ release provides a numerical-aperture-limited telecentric microscope sensor,
 finite-field Kohler illumination, and the renderer integration needed by
 reference-dependent emitters.
 
-Version `0.1.0` is a research release based on Mitsuba `v3.8.0` at commit
+Version `0.1.1` is a research release based on Mitsuba `v3.8.0` at commit
 `2ba361481801f6e158bbab2b64345f6778bd2865`.
 
 ## Scope

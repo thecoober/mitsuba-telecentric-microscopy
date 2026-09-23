@@ -45,4 +45,4 @@ for patch in "${patches[@]}"; do
     git -C "${MITSUBA_DIR}" apply "${patch}"
 done
 
-echo "Applied Mitsuba Telecentric Microscopy 0.1.0 to ${MITSUBA_DIR}"
+echo "Applied Mitsuba Telecentric Microscopy 0.1.1 to ${MITSUBA_DIR}"
