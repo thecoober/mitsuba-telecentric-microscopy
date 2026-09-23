@@ -1,0 +1,16 @@
+Mitsuba Telecentric Microscopy
+Copyright (c) 2026 thecoober
+
+This project is an extension of Mitsuba 3 and includes modifications derived
+from the Mitsuba 3 source code.
+
+Mitsuba 3
+Copyright (c) 2017 Wenzel Jakob
+https://github.com/mitsuba-renderer/mitsuba3
+
+The initial release targets Mitsuba v3.8.0 at commit
+2ba361481801f6e158bbab2b64345f6778bd2865.
+
+Mitsuba 3 and this extension are distributed under the BSD 3-Clause License.
+The names of upstream copyright holders and contributors may not be used to
+endorse or promote derived products without prior written permission.

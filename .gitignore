@@ -1,0 +1,9 @@
+/.deps/
+/build/
+/.venv/
+__pycache__/
+*.pyc
+*.exr
+*.png
+*.tif
+*.tiff

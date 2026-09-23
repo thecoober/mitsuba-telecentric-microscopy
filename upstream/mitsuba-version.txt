@@ -1,0 +1,3 @@
+repository=https://github.com/mitsuba-renderer/mitsuba3.git
+tag=v3.8.0
+commit=2ba361481801f6e158bbab2b64345f6778bd2865

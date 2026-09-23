@@ -1,0 +1,324 @@
+diff --git a/include/mitsuba/python/docstr.h b/include/mitsuba/python/docstr.h
+index 1c1d59323..0d3089b30 100644
+--- a/include/mitsuba/python/docstr.h
++++ b/include/mitsuba/python/docstr.h
+@@ -3278,6 +3278,9 @@ static const char *__doc_mitsuba_EmitterFlags_Empty = R"doc(No flags set (defaul
+
+ static const char *__doc_mitsuba_EmitterFlags_Infinite = R"doc(The emitter is placed at infinity (e.g. environment maps))doc";
+
++static const char *__doc_mitsuba_EmitterFlags_ReferenceDependent =
++R"doc(The incident radiance depends on both the reference point and direction)doc";
++
+ static const char *__doc_mitsuba_EmitterFlags_SpatiallyVarying = R"doc(The emission depends on the UV coordinates)doc";
+
+ static const char *__doc_mitsuba_EmitterFlags_Surface = R"doc(The emitter is attached to a surface (e.g. area emitters))doc";
+@@ -8226,6 +8229,14 @@ Returns:
+     The incident radiance and discrete or solid angle density of the
+     sample.)doc";
+
++static const char *__doc_mitsuba_Scene_eval_emitter_connection =
++R"doc(Evaluate emission at the endpoint of a sampled path segment.
++
++Ordinary emitters are evaluated from the endpoint interaction. Emitters
++marked as ``EmitterFlags.ReferenceDependent`` are instead evaluated from
++the preceding scattering point and sampled direction. ``has_reference``
++must be false for directly visible emitters on primary rays.)doc";
++
+ static const char *__doc_mitsuba_Scene_integrator = R"doc(Return the scene's integrator)doc";
+
+ static const char *__doc_mitsuba_Scene_integrator_2 = R"doc(Return the scene's integrator)doc";
+@@ -14615,4 +14626,3 @@ static const char *__doc_operator_lshift = R"doc(Turns a vector of elements into
+ #if defined(__GNUG__)
+ #pragma GCC diagnostic pop
+ #endif
+-
+diff --git a/include/mitsuba/render/emitter.h b/include/mitsuba/render/emitter.h
+index a80ed92c8..71361b2ec 100644
+--- a/include/mitsuba/render/emitter.h
++++ b/include/mitsuba/render/emitter.h
+@@ -39,6 +39,15 @@ enum class EmitterFlags : uint32_t {
+     /// The emission depends on the UV coordinates
+     SpatiallyVarying     = 0x00010,
+
++    /**
++     * The incident radiance depends on both the reference point and direction.
++     *
++     * Emitters with this flag cannot be evaluated from a ray miss alone.
++     * Integrators must retain the preceding scattering interaction and use
++     * Endpoint::eval_direction() to evaluate BSDF-sampled connections.
++     */
++    ReferenceDependent   = 0x00020,
++
+     // =============================================================
+     //!                 Compound lobe attributes
+     // =============================================================
+diff --git a/include/mitsuba/render/scene.h b/include/mitsuba/render/scene.h
+index 73bb7abbd..8480e6429 100644
+--- a/include/mitsuba/render/scene.h
++++ b/include/mitsuba/render/scene.h
+@@ -632,6 +632,39 @@ public:
+                                     const DirectionSample3f &ds,
+                                     Mask active = true) const;
+
++    /**
++     * \brief Evaluate emission at the endpoint of a sampled path segment
++     *
++     * Ordinary emitters are evaluated using \ref Endpoint::eval(). Emitters
++     * marked as \ref EmitterFlags::ReferenceDependent instead require the
++     * preceding scattering interaction and are evaluated using
++     * \ref eval_emitter_direction(). This distinction is necessary for
++     * spatially conditioned illumination systems whose radiance cannot be
++     * inferred from a ray miss alone.
++     *
++     * \param ref
++     *    The preceding scattering interaction.
++     *
++     * \param si
++     *    The surface interaction at the emitter, or the invalid interaction
++     *    produced when the sampled ray escaped the scene.
++     *
++     * \param ds
++     *    Direction sample connecting \c ref to the emitter.
++     *
++     * \param has_reference
++     *    Whether \c ref is a valid preceding scattering interaction. This
++     *    must be false for directly visible emitters on primary rays.
++     *
++     * \return
++     *    Emitted radiance carried by the sampled path segment.
++     */
++    Spectrum eval_emitter_connection(const Interaction3f &ref,
++                                     const SurfaceInteraction3f &si,
++                                     const DirectionSample3f &ds,
++                                     Mask has_reference,
++                                     Mask active = true) const;
++
+     //! @}
+     // =============================================================
+
+diff --git a/include/mitsuba/render/sensor.h b/include/mitsuba/render/sensor.h
+index 73e0d2bee..94b63159c 100644
+--- a/include/mitsuba/render/sensor.h
++++ b/include/mitsuba/render/sensor.h
+@@ -129,6 +129,17 @@ public:
+      */
+     ref<const Sampler> sampler() const { return m_sampler.get(); }
+
++    /// Does this sensor expose telecentric microscope parameters?
++    virtual bool is_telecentric_microscope() const { return false; }
++
++    virtual ScalarFloat microscope_na_det() const { return 0.f; }
++    virtual ScalarFloat microscope_n_det_medium() const { return 1.f; }
++    virtual ScalarFloat microscope_det_focus_z() const { return 0.f; }
++    virtual ScalarFloat microscope_sensor_z() const { return 0.f; }
++    virtual ScalarFloat microscope_fov_mm() const { return 0.f; }
++    virtual ScalarFloat microscope_fov_y_mm() const { return 0.f; }
++    virtual ScalarFloat microscope_telecentric_mag_error_per_mm() const { return 0.f; }
++
+     //! @}
+     // =============================================================
+
+diff --git a/src/emitters/CMakeLists.txt b/src/emitters/CMakeLists.txt
+index 2735f0f71..07914748a 100644
+--- a/src/emitters/CMakeLists.txt
++++ b/src/emitters/CMakeLists.txt
+@@ -4,6 +4,7 @@ add_plugin(area            area.cpp)
+ add_plugin(point           point.cpp)
+ add_plugin(constant        constant.cpp)
+ add_plugin(envmap          envmap.cpp)
++add_plugin(kohler          kohler.cpp)
+ add_plugin(directional     directional.cpp)
+ add_plugin(directionalarea directionalarea.cpp)
+ add_plugin(spot            spot.cpp)
+diff --git a/src/integrators/direct.cpp b/src/integrators/direct.cpp
+index d55acb084..1a3a9070d 100644
+--- a/src/integrators/direct.cpp
++++ b/src/integrators/direct.cpp
+@@ -201,12 +201,13 @@ public:
+             active_b &= (emitter != nullptr);
+
+             if (dr::any_or<true>(active_b)) {
+-                Spectrum emitter_val = emitter->eval(si_bsdf, active_b);
+                 Mask delta = has_flag(bs.sampled_type, BSDFFlags::Delta);
+
+                 /* Determine probability of having sampled that same
+                    direction using Emitter sampling. */
+                 DirectionSample3f ds(scene, si_bsdf, si);
++                Spectrum emitter_val = scene->eval_emitter_connection(
++                    si, si_bsdf, ds, true, active_b);
+
+                 Float emitter_pdf =
+                     dr::select(delta, 0.f, scene->pdf_emitter_direction(si, ds, active_b));
+diff --git a/src/integrators/path.cpp b/src/integrators/path.cpp
+index d215a9ecc..72f4a9b0d 100644
+--- a/src/integrators/path.cpp
++++ b/src/integrators/path.cpp
+@@ -214,10 +214,14 @@ public:
+                 // Compute MIS weight for emitter sample from previous bounce
+                 Float mis_bsdf = mis_weight(ls.prev_bsdf_pdf, em_pdf);
+
++                Mask active_e = ls.prev_bsdf_pdf > 0.f;
++                Spectrum emitted = scene->eval_emitter_connection(
++                    ls.prev_si, si, ds, ls.depth > 0u, active_e);
++
+                 // Accumulate, being careful with polarization (see spec_fma)
+                 ls.result = spec_fma(
+                     ls.throughput,
+-                    ds.emitter->eval(si, ls.prev_bsdf_pdf > 0.f) * mis_bsdf,
++                    emitted * mis_bsdf,
+                     ls.result);
+             }
+
+diff --git a/src/integrators/volpath.cpp b/src/integrators/volpath.cpp
+index fb80c5de2..f84ae2e16 100644
+--- a/src/integrators/volpath.cpp
++++ b/src/integrators/volpath.cpp
+@@ -329,13 +329,14 @@ public:
+                 Mask active_e = active_surface && (emitter != nullptr) &&
+                                 !((depth == 0u) && m_hide_emitters);
+                 if (dr::any_or<true>(active_e)) {
++                    DirectionSample3f ds(scene, si, last_scatter_event);
+                     Float emitter_pdf = 1.0f;
+                     if (dr::any_or<true>(active_e && !count_direct)) {
+                         // Get the PDF of sampling this emitter using next event estimation
+-                        DirectionSample3f ds(scene, si, last_scatter_event);
+                         emitter_pdf = scene->pdf_emitter_direction(last_scatter_event, ds, active_e);
+                     }
+-                    Spectrum emitted = emitter->eval(si, active_e);
++                    Spectrum emitted = scene->eval_emitter_connection(
++                        last_scatter_event, si, ds, depth > 0u, active_e);
+                     Spectrum contrib = dr::select(count_direct, throughput * emitted,
+                                                   throughput * mis_weight(last_scatter_direction_pdf, emitter_pdf) * emitted);
+                     dr::masked(result, active_e) += contrib;
+diff --git a/src/integrators/volpathmis.cpp b/src/integrators/volpathmis.cpp
+index e66ba6de8..97217330b 100644
+--- a/src/integrators/volpathmis.cpp
++++ b/src/integrators/volpathmis.cpp
+@@ -386,13 +386,14 @@ public:
+                 Mask active_e = active_surface && (emitter != nullptr) &&
+                                 !((depth == 0u) && m_hide_emitters);
+                 if (dr::any_or<true>(active_e)) {
++                    DirectionSample3f ds(scene, si, last_scatter_event);
+                     if (dr::any_or<true>(active_e && !count_direct)) {
+                         // Get the PDF of sampling this emitter using next event estimation
+-                        DirectionSample3f ds(scene, si, last_scatter_event);
+                         Float emitter_pdf = scene->pdf_emitter_direction(last_scatter_event, ds, active_e);
+                         update_weights(p_over_f_nee, emitter_pdf, 1.f, channel, active_e);
+                     }
+-                    Spectrum emitted = emitter->eval(si, active_e);
++                    Spectrum emitted = scene->eval_emitter_connection(
++                        last_scatter_event, si, ds, depth > 0u, active_e);
+                     Spectrum contrib = dr::select(count_direct, mis_weight(p_over_f) * emitted,
+                                                             mis_weight(p_over_f, p_over_f_nee) * emitted);
+                     dr::masked(result, active_e) += contrib;
+diff --git a/src/python/python/ad/integrators/prb.py b/src/python/python/ad/integrators/prb.py
+index 3986ef4a4..8cd543ed7 100644
+--- a/src/python/python/ad/integrators/prb.py
++++ b/src/python/python/ad/integrators/prb.py
+@@ -158,7 +158,9 @@ class PRBIntegrator(RBIntegrator):
+             )
+
+             with dr.resume_grad(when=not primal):
+-                Le = β * mis * ds.emitter.eval(si, active_next)
++                emitted = scene.eval_emitter_connection(
++                    si_prev, si, ds, depth > 0, active_next)
++                Le = β * mis * emitted
+
+             # ---------------------- Emitter sampling ----------------------
+
+diff --git a/src/python/python/ad/integrators/prb_projective.py b/src/python/python/ad/integrators/prb_projective.py
+index f10c990dc..ee1a69d5b 100644
+--- a/src/python/python/ad/integrators/prb_projective.py
++++ b/src/python/python/ad/integrators/prb_projective.py
+@@ -233,7 +233,9 @@ class PathProjectiveIntegrator(PSIntegrator):
+             )
+
+             with dr.resume_grad(when=not primal):
+-                Le = β * mis * ds.emitter.eval(si, active_next)
++                emitted = scene.eval_emitter_connection(
++                    si_prev, si, ds, depth > 0, active_next)
++                Le = β * mis * emitted
+
+             # ---------------------- Emitter sampling ----------------------
+
+diff --git a/src/python/python/ad/integrators/prbvolpath.py b/src/python/python/ad/integrators/prbvolpath.py
+index d80c62838..72bec473f 100644
+--- a/src/python/python/ad/integrators/prbvolpath.py
++++ b/src/python/python/ad/integrators/prbvolpath.py
+@@ -243,7 +243,8 @@ class PRBVolpathIntegrator(RBIntegrator):
+                     emitter_pdf = scene.pdf_emitter_direction(last_scatter_event, ds, active_e)
+                 else:
+                     emitter_pdf = 0.0
+-                emitted = emitter.eval(si, active_e)
++                emitted = scene.eval_emitter_connection(
++                    last_scatter_event, si, ds, depth > 0, active_e)
+                 contrib = dr.select(count_direct, throughput * emitted,
+                                     throughput * mis_weight(last_scatter_direction_pdf, emitter_pdf) * emitted)
+                 L[active_e] += dr.detach(contrib if is_primal else -contrib)
+diff --git a/src/render/python/emitter.cpp b/src/render/python/emitter.cpp
+index af899faf2..b2134fc0c 100644
+--- a/src/render/python/emitter.cpp
++++ b/src/render/python/emitter.cpp
+@@ -10,5 +10,6 @@ MI_PY_EXPORT(EmitterExtras) {
+         .def_value(EmitterFlags, Infinite)
+         .def_value(EmitterFlags, Surface)
+         .def_value(EmitterFlags, SpatiallyVarying)
++        .def_value(EmitterFlags, ReferenceDependent)
+         .def_value(EmitterFlags, Delta);
+ }
+diff --git a/src/render/python/scene_v.cpp b/src/render/python/scene_v.cpp
+index 60cf5f100..7efa161e4 100644
+--- a/src/render/python/scene_v.cpp
++++ b/src/render/python/scene_v.cpp
+@@ -86,6 +86,9 @@ MI_PY_EXPORT(Scene) {
+              "ref"_a, "ds"_a, "active"_a = true, D(Scene, pdf_emitter_direction))
+         .def("eval_emitter_direction", &Scene::eval_emitter_direction,
+              "ref"_a, "ds"_a, "active"_a = true, D(Scene, eval_emitter_direction))
++        .def("eval_emitter_connection", &Scene::eval_emitter_connection,
++             "ref"_a, "si"_a, "ds"_a, "has_reference"_a,
++             "active"_a = true, D(Scene, eval_emitter_connection))
+         .def("sample_emitter_ray", &Scene::sample_emitter_ray,
+              "time"_a, "sample1"_a, "sample2"_a, "sample3"_a, "active"_a,
+              D(Scene, sample_emitter_ray))
+diff --git a/src/render/scene.cpp b/src/render/scene.cpp
+index 22cef7237..c6e164174 100644
+--- a/src/render/scene.cpp
++++ b/src/render/scene.cpp
+@@ -401,6 +401,25 @@ MI_VARIANT Spectrum Scene<Float, Spectrum>::eval_emitter_direction(
+     return ds.emitter->eval_direction(ref, ds, active);
+ }
+
++MI_VARIANT Spectrum Scene<Float, Spectrum>::eval_emitter_connection(
++    const Interaction3f &ref, const SurfaceInteraction3f &si,
++    const DirectionSample3f &ds, Mask has_reference, Mask active) const {
++    MI_MASK_ARGUMENT(active);
++
++    Mask use_directional_eval =
++        active && has_reference &&
++        has_flag(ds.emitter->flags(active),
++                 EmitterFlags::ReferenceDependent);
++
++    Spectrum result =
++        ds.emitter->eval(si, active && !use_directional_eval);
++
++    if (dr::any_or<true>(use_directional_eval))
++        result += ds.emitter->eval_direction(ref, ds, use_directional_eval);
++
++    return result;
++}
++
+ MI_VARIANT typename Scene<Float, Spectrum>::SilhouetteSample3f
+ Scene<Float, Spectrum>::sample_silhouette(const Point3f &sample_,
+                                           uint32_t flags, Mask active) const {
+diff --git a/src/sensors/CMakeLists.txt b/src/sensors/CMakeLists.txt
+index 65e604e5e..6c6cd1e85 100644
+--- a/src/sensors/CMakeLists.txt
++++ b/src/sensors/CMakeLists.txt
+@@ -2,6 +2,7 @@ set(MI_PLUGIN_PREFIX "sensors")
+
+ add_plugin(perspective     perspective.cpp)
+ add_plugin(orthographic    orthographic.cpp)
++add_plugin(telecentric_microscope telecentric_microscope.cpp)
+ add_plugin(radiancemeter   radiancemeter.cpp)
+ add_plugin(thinlens        thinlens.cpp)
+ add_plugin(irradiancemeter irradiancemeter.cpp)
