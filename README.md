@@ -75,12 +75,20 @@ The script refuses an incompatible upstream commit by default. Set
 After building Mitsuba and activating its generated `setpath.sh`, run:
 
 ```bash
-python examples/minimal_scene.py --output telecentric_kohler.exr
+python examples/minimal_scene.py \
+    --output telecentric_kohler_checkerboard.exr
 ```
 
-The scene uses a rough metallic plane to exercise both the sensor and emitter.
-Application scenes can replace the plane with a measured or procedurally
-generated microscopic surface.
+The scene uses an inclined checkerboard whose center intersects the shared
+detection and illumination focal plane. The center strip remains sharp while
+the left and right regions become progressively defocused. Its circular
+illumination boundary is produced by the finite Kohler field rather than by a
+detector field stop. Use `--tilt-deg`, `--focus-z`, and `--illum-field-mm` to
+change these effects. Application scenes can replace the board with a measured
+or procedurally generated microscopic surface.
+
+![Inclined checkerboard rendered with telecentric detection and finite-field
+Kohler illumination](docs/images/telecentric_kohler_checkerboard.png)
 
 ## Patches
 

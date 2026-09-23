@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Replace the flat rough-metal example with an inclined checkerboard that
+  visualizes telecentric defocus and the finite Kohler illumination field.
+
 ## 0.1.0 - 2026-09-23
 
 - Add the `telecentric_microscope` sensor.
